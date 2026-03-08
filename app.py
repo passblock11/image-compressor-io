@@ -74,7 +74,7 @@ async def compress(file: UploadFile = File(...)):
     )
 
     output.seek(0)
-
+# //changes 
     return Response(
         content=output.read(),
         media_type="image/jpeg"

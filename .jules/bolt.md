@@ -1,0 +1,3 @@
+## 2025-05-15 - [Optimize image ingestion and resizing strategy]
+**Learning:** Using `file.file.seek(0, 2)` and `file.file.tell()` allows for early file size validation in FastAPI `UploadFile` without reading the entire content into RAM. Furthermore, passing the underlying file stream `file.file` directly to `PIL.Image.open()` reduces peak memory usage. Switching from `Image.LANCZOS` to `Image.BICUBIC` provides a measurable speedup with a negligible impact on visual quality for large resizing operations.
+**Action:** Always prefer stream-based validation and ingestion for large file uploads. Use `BICUBIC` for a better balance of speed and image quality unless absolute maximum sharpness is required.

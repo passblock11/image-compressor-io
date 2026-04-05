@@ -17,24 +17,31 @@ def root():
 async def compress(file: UploadFile = File(...)):
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Seek to the end of the file to determine size without reading into memory
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        # Reset file pointer to the beginning for subsequent reading
+        file.file.seek(0)
 
         # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # try opening image directly from file stream to avoid redundant memory buffering
+        img = Image.open(file.file)
+
+    except HTTPException:
+        # Re-raise HTTPExceptions to prevent them from being caught by the generic Exception block
+        raise
 
     except UnidentifiedImageError:
         raise HTTPException(
@@ -59,7 +66,8 @@ async def compress(file: UploadFile = File(...)):
     # resize large images
     if width > MAX_WIDTH:
         new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        # Use BICUBIC resampling for a better balance of performance and quality compared to LANCZOS
+        img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
 
     output = io.BytesIO()
 

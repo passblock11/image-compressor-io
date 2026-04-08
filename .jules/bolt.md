@@ -1,0 +1,3 @@
+## 2026-04-08 - Streamlined image processing and resizing
+**Learning:** Transitioning from memory-heavy operations (like await file.read()) to stream-based processing significantly reduces latency and memory footprint in FastAPI. Additionally, using Image.BICUBIC instead of Image.LANCZOS provides a good speedup with negligible quality loss for typical compression tasks. Catching and re-raising HTTPException in FastAPI endpoints is crucial to prevent swallowing custom error responses in catch-all exception blocks.
+**Action:** Always prefer stream-based file handling (file.file) and use output.getvalue() for BytesIO responses. Use BICUBIC for general-purpose image resizing unless maximum quality is explicitly required.

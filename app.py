@@ -17,31 +17,34 @@ def root():
 async def compress(file: UploadFile = File(...)):
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Optimization: Validate file size without reading it into RAM
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Optimization: Pass file stream directly to Image.open to avoid loading entire image into memory
+        img = Image.open(file.file)
 
     except UnidentifiedImageError:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
+    except HTTPException:
+        # Re-raise HTTP exceptions to avoid them being caught by the general Exception block
+        raise
     except Exception:
         raise HTTPException(
             status_code=400,
@@ -59,7 +62,8 @@ async def compress(file: UploadFile = File(...)):
     # resize large images
     if width > MAX_WIDTH:
         new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        # Optimization: Use BICUBIC resampling for a better speed/quality balance than LANCZOS
+        img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
 
     output = io.BytesIO()
 
@@ -73,9 +77,8 @@ async def compress(file: UploadFile = File(...)):
         subsampling=2
     )
 
-    output.seek(0)
-# //changes 
+    # Optimization: Use getvalue() for more efficient response content retrieval
     return Response(
-        content=output.read(),
+        content=output.getvalue(),
         media_type="image/jpeg"
     )

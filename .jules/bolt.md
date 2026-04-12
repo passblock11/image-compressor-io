@@ -1,0 +1,3 @@
+## 2025-05-15 - Stream-based file handling and Resampling optimization
+**Learning:** In FastAPI, `await file.read()` loads the entire file into memory as a bytes object. For image processing, this is redundant as `PIL.Image.open()` can take the underlying file stream `file.file`. Additionally, `Image.LANCZOS` is significantly slower than `Image.BICUBIC` for high-resolution images with often negligible quality difference for general compression.
+**Action:** Always prefer `file.file` for size validation (via `seek`/`tell`) and image opening. Use `Image.BICUBIC` for a better speed/quality tradeoff in web-based image compression.

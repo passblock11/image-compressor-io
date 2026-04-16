@@ -14,34 +14,37 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+def compress(file: UploadFile = File(...)):
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # file size validation using stream to avoid reading whole file into memory
+        file.file.seek(0, 2)
+        size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # try opening image directly from stream
+        img = Image.open(file.file)
 
     except UnidentifiedImageError:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
+    except HTTPException:
+        # re-raise HTTPExceptions to avoid them being caught by the generic except block
+        raise
     except Exception:
         raise HTTPException(
             status_code=400,
@@ -59,7 +62,8 @@ async def compress(file: UploadFile = File(...)):
     # resize large images
     if width > MAX_WIDTH:
         new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        # BICUBIC is faster than LANCZOS with good quality
+        img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
 
     output = io.BytesIO()
 
@@ -73,9 +77,7 @@ async def compress(file: UploadFile = File(...)):
         subsampling=2
     )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output.getvalue(),
         media_type="image/jpeg"
     )

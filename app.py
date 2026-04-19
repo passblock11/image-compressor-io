@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
@@ -14,68 +13,68 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an image using pyvips for high performance.
+    Uses stream-based loading and optimized JPEG parameters.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Validate file size without reading entire file into memory
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Custom source for pyvips to read from UploadFile.file
+        source = pyvips.SourceCustom()
+        source.on_read(lambda bytes_to_read: file.file.read(bytes_to_read))
+        source.on_seek(lambda offset, whence: file.file.seek(offset, whence))
 
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
+        try:
+            # Use access="sequential" for memory efficiency
+            img = pyvips.Image.new_from_source(source, "", access="sequential")
+        except pyvips.Error:
+             raise HTTPException(
+                status_code=400,
+                detail="Invalid image file"
+            )
+
+        MAX_WIDTH = 1600
+
+        # Optimized resize using thumbnail_image (uses shrink-on-load if possible)
+        if img.width > MAX_WIDTH:
+            img = img.thumbnail_image(MAX_WIDTH)
+
+        # Save to buffer with optimized JPEG parameters
+        output_buffer = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            subsample_mode='on'
         )
 
-    except Exception:
+        return Response(
+            content=output_buffer,
+            media_type="image/jpeg"
+        )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions to avoid them being caught by the generic Exception block
+        raise
+    except Exception as e:
+        print(f"Compression error: {e}")
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )

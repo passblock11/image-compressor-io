@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
@@ -14,32 +13,51 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an image using pyvips for high performance.
+    FastAPI handles sync 'def' in a thread pool, ideal for CPU-bound image processing.
+    """
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # validate file size without reading into memory
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
+                detail=f"File too large. Max allowed size is {MAX_FILE_SIZE // (1024 * 1024)} MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Read the file data for pyvips
+        image_data = file.file.read()
 
-    except UnidentifiedImageError:
+        # Use pyvips.Image.thumbnail_buffer for fast resizing during load
+        # This is much faster as it only decodes the required pixels
+        MAX_WIDTH = 1600
+        img = pyvips.Image.thumbnail_buffer(image_data, MAX_WIDTH)
+
+    except HTTPException:
+        # Re-raise HTTPExceptions to avoid them being caught by the generic Exception block
+        raise
+
+    except pyvips.Error as e:
+        if "not in a known format" in str(e) or "not a known format" in str(e):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image file"
+            )
         raise HTTPException(
             status_code=400,
-            detail="Invalid image file"
+            detail="Upload failed"
         )
 
     except Exception:
@@ -48,34 +66,19 @@ async def compress(file: UploadFile = File(...)):
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    # Convert to RGB (flatten alpha) if necessary before JPEG save
+    if img.hasalpha():
+        img = img.flatten()
 
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
+    # Compress image to JPEG buffer
+    # subsampling_mode=0 is 4:4:4, 1 is 4:2:2, 2 is 4:2:0 (default)
+    compressed_data = img.jpegsave_buffer(
+        Q=80,
+        optimize_coding=True,
+        interlace=True
     )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=compressed_data,
         media_type="image/jpeg"
     )

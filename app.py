@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
+import os
 
 app = FastAPI()
 
@@ -14,68 +14,77 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an image using pyvips.
+    Uses 'def' instead of 'async def' to run in a thread pool,
+    as image processing is CPU-bound.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # validate file size without reading entire file into memory
+        file.file.seek(0, os.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # read image data
+        image_bytes = file.file.read()
 
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
+        # open image using pyvips thumbnail_buffer for efficient loading and resizing
+        MAX_WIDTH = 1600
 
-    except Exception:
+        # We try to load the image. If it's larger than MAX_WIDTH, we let thumbnail_buffer
+        # handle the resize during load for maximum performance.
+        try:
+            # Use thumbnail_buffer to resize while loading
+            # size='down' ensures we only downsize
+            img = pyvips.Image.thumbnail_buffer(
+                image_bytes,
+                MAX_WIDTH,
+                height=10000,
+                size='down'
+            )
+        except pyvips.Error as e:
+            if "not in a known format" in str(e) or "not a known format" in str(e):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid image file"
+                )
+            raise
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during processing: {e}")
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    # ensure image is in RGB for JPEG saving
+    if img.hasalpha():
+        img = img.flatten()
 
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
+    # compress image to JPEG
+    # Q=80, optimize_coding=True, interlace=True matches Pillow's quality=80, optimize=True, progressive=True
+    output_bytes = img.jpegsave_buffer(
+        Q=80,
+        optimize_coding=True,
+        interlace=True
     )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

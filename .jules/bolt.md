@@ -1,0 +1,3 @@
+## 2025-05-15 - [Migration from Pillow to pyvips]
+**Learning:** Migrating from Pillow to `pyvips` with `thumbnail_buffer` and switching to synchronous endpoints for CPU-bound tasks in FastAPI significantly reduces latency. `thumbnail_buffer` is particularly effective as it performs resizing during the load operation, avoiding the overhead of decoding the full-resolution image into memory.
+**Action:** Prefer `pyvips` for heavy image processing tasks and use `thumbnail_buffer` with `size='down'` for efficient resizing. Use synchronous endpoints in FastAPI for CPU-bound tasks to leverage its internal thread pool.

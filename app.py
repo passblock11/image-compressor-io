@@ -1,11 +1,16 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
+import logging
+
+# Configure logging to help diagnose issues in production
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_WIDTH = 1600
 
 
 @app.get("/")
@@ -14,68 +19,76 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an image using pyvips for high performance.
+    Processes images synchronously in a thread pool to avoid blocking the event loop.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Optimized file size validation without reading entire file into memory.
+        # This protects against memory exhaustion from extremely large uploads.
+        file.file.seek(0, 2)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
+                detail=f"File too large. Max allowed size is {MAX_FILE_SIZE // (1024*1024)} MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Read file content for processing.
+        # UploadFile.file is a spooled temp file, which is efficient.
+        image_bytes = file.file.read()
 
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
+        # Use pyvips for high-performance image processing.
+        # thumbnail_buffer is significantly faster than standard loading + resizing
+        # as it employs "shrink-on-load" optimizations.
+        try:
+            img = pyvips.Image.thumbnail_buffer(
+                image_bytes,
+                MAX_WIDTH,
+                height=10_000_000,
+                size='down'
+            )
+        except pyvips.Error as e:
+            error_msg = str(e)
+            if "not in a known format" in error_msg or "not a known format" in error_msg:
+                raise HTTPException(status_code=400, detail="Invalid image file")
+            logger.error(f"Pyvips processing error: {error_msg}")
+            raise HTTPException(status_code=500, detail="Error processing image")
+
+        # Handle transparency: JPEG doesn't support alpha channels.
+        # Flattening onto a default (black) background.
+        if img.hasalpha():
+            img = img.flatten()
+
+        # Compress using pyvips jpegsave_buffer.
+        # Using optimize_coding=True and interlace=True for better web performance.
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True
         )
 
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Upload failed"
+        return Response(
+            content=output_bytes,
+            media_type="image/jpeg"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )
+    except HTTPException:
+        # Explicitly re-raise HTTPExceptions (like 413 or 400)
+        raise
+    except Exception as e:
+        # Log unexpected errors but don't leak details to the client
+        logger.exception(f"Unexpected error during compression: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during processing"
+        )

@@ -1,0 +1,3 @@
+## 2025-05-15 - FastAPI CPU-Bound Threading and Stream Validation
+**Learning:** Using `async def` for CPU-bound tasks like image compression blocks the event loop in FastAPI. Switching to synchronous `def` allows FastAPI to automatically delegate the work to an external thread pool, improving throughput. Additionally, validating file size using `seek(0, 2)` and `tell()` on the `UploadFile.file` stream avoids loading the entire file into memory prematurely.
+**Action:** Always use synchronous `def` for CPU-bound endpoints in FastAPI. Use stream-based methods for file size validation before reading content.

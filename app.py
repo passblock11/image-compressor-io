@@ -1,11 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_WIDTH = 1600
 
 
 @app.get("/")
@@ -14,13 +14,16 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compress an uploaded image.
+    Uses pyvips for high-performance image processing.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Read uploaded file
+        image_bytes = file.file.read()
 
-        # file size validation
+        # File size validation
         if len(image_bytes) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
@@ -33,49 +36,46 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Use pyvips to load and resize in one step for better performance.
+        # thumbnail_buffer is much faster than loading the full image and resizing.
+        # size='down' ensures we only shrink images, never upscale.
+        # height is set to a very large value to allow width-based constraint.
+        img = pyvips.Image.thumbnail_buffer(
+            image_bytes,
+            MAX_WIDTH,
+            height=10000000,
+            size='down'
+        )
 
-    except UnidentifiedImageError:
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    # Handle transparency: if image has an alpha channel, flatten it onto a white background.
+    # This maintains functional parity with the previous Pillow implementation.
+    if img.hasalpha():
+        img = img.flatten(background=[255, 255, 255])
 
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
+    # Compress image to JPEG.
+    # Q=80: Quality level.
+    # optimize_coding=True: Compute optimal Huffman coding tables.
+    # interlace=True: Generate a progressive JPEG.
+    output_buffer = img.jpegsave_buffer(
+        Q=80,
+        optimize_coding=True,
+        interlace=True
     )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_buffer,
         media_type="image/jpeg"
     )

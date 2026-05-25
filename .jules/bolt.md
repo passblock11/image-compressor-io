@@ -1,0 +1,3 @@
+## 2025-05-22 - [pyvips vs Pillow for Image Compression]
+**Learning:** Migrating from Pillow to pyvips with synchronous FastAPI endpoints and `thumbnail_buffer` achieved a ~72% latency reduction (from ~0.29s to ~0.08s) for 3000x3000px images. Explicitly handling transparency with `flatten` and using `interlace=True` for progressive JPEGs is necessary for parity. Synchronous endpoints in FastAPI for CPU-bound tasks like image processing prevent event loop blockage by using a thread pool.
+**Action:** Use pyvips for high-performance image processing tasks. Ensure `libvips-dev` is in the build environment (e.g., `render.yaml`). Always check for library-specific argument names (e.g., `interlace` vs `progressive`).

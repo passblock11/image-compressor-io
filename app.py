@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
@@ -14,11 +13,11 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+def compress(file: UploadFile = File(...)):
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # read uploaded file synchronously
+        image_bytes = file.file.read()
 
         # file size validation
         if len(image_bytes) > MAX_FILE_SIZE:
@@ -33,10 +32,38 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Use pyvips for high-performance image processing
+        # thumbnail_buffer is faster because it performs shrink-on-load
+        MAX_WIDTH = 1600
+        img = pyvips.Image.thumbnail_buffer(
+            image_bytes,
+            MAX_WIDTH,
+            height=10000000,
+            auto_rotate=True
+        )
 
-    except UnidentifiedImageError:
+        # Handle transparency by flattening onto a white background
+        if img.hasalpha():
+            img = img.flatten(background=[255, 255, 255])
+
+        # compress image to JPEG buffer
+        # Q=80, optimize_coding=True, interlace=True matches Pillow's quality/progressive settings
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True
+        )
+
+        return Response(
+            content=output_bytes,
+            media_type="image/jpeg"
+        )
+
+    except HTTPException as e:
+        # Re-raise HTTPExceptions to preserve status codes and messages
+        raise e
+
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
@@ -47,35 +74,3 @@ async def compress(file: UploadFile = File(...)):
             status_code=400,
             detail="Upload failed"
         )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )

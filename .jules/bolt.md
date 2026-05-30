@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimizing Image Compression with pyvips]
+**Learning:** Transitioning from Pillow to pyvips and switching from `async def` to synchronous `def` in FastAPI significantly reduces latency for CPU-bound image processing. pyvips is much faster for resizing and encoding, and `thumbnail_buffer` allows for extremely efficient downsizing during the load phase.
+**Action:** Use pyvips for high-performance image processing tasks. Ensure that any system dependencies (like libvips-dev) are correctly documented in the build configuration (e.g., render.yaml). Always verify that broad `except Exception` blocks do not swallow specific `HTTPException` instances to maintain accurate API error reporting.

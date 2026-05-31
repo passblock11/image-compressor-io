@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimizing image compression with pyvips]
+**Learning:** Migrating from Pillow to pyvips for CPU-bound image processing in FastAPI provides a massive performance boost (~60-70% latency reduction). Using a synchronous `def` for such operations allows FastAPI to utilize its thread pool, preventing event loop blockage. pyvips's `thumbnail_image` is particularly efficient as it implements shrink-on-load.
+**Action:** Prefer pyvips over Pillow for high-throughput image processing. Ensure functional parity by manually flattening alpha channels (using `img.flatten(background=[255, 255, 255])`) and using `interlace=True` for progressive JPEGs.

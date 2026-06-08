@@ -1,0 +1,3 @@
+## 2025-06-08 - [Optimized Image Processing with pyvips]
+**Learning:** Migrating from Pillow to pyvips and switching from `async def` to synchronous `def` in FastAPI (to offload CPU-bound work to threads) significantly reduces latency for image processing. Using `thumbnail_buffer` for "shrink-on-load" is the most efficient way to resize images in libvips, and it's better to avoid redundant decoding by checking dimensions and then thumbnailing if needed, rather than loading the whole image first.
+**Action:** Use `pyvips` for high-performance image processing. Always use synchronous endpoints in FastAPI for CPU-bound tasks. Use `thumbnail_buffer` for efficient resizing. Avoid redundant decoding by using lazy loading (`new_from_buffer`) for metadata checks.

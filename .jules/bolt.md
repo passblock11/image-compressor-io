@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimized image compression with pyvips]
+**Learning:** Migrating from Pillow to pyvips for image processing significantly reduces latency (by ~70% in this case) due to pyvips's "shrink-on-load" optimization and efficient libvips backend. Additionally, using synchronous `def` endpoints in FastAPI for CPU-bound tasks like image processing prevents event loop blockage and allows the server to scale better using its thread pool.
+**Action:** Prefer pyvips over Pillow for high-throughput image processing tasks. Ensure libvips-dev is installed in the environment. Use synchronous `def` endpoints in FastAPI for CPU-bound operations.

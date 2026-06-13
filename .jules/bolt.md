@@ -1,0 +1,3 @@
+## 2025-05-22 - [Migrate image compression to pyvips]
+**Learning:** Migrating from Pillow to pyvips for image resizing and compression significantly reduces latency. Using `thumbnail_buffer` enables "shrink-on-load" optimization, which is much faster than decoding a high-resolution image into memory before resizing. Additionally, changing the FastAPI endpoint from `async def` to synchronous `def` allows the server to use its thread pool for CPU-bound tasks, avoiding event loop blockage.
+**Action:** Always consider `pyvips` for high-performance image processing tasks, especially when resizing from large source files. Document system-level dependencies like `libvips-dev`.

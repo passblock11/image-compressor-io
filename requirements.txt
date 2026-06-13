@@ -3,3 +3,5 @@ uvicorn
 pillow
 python-multipart
 pyvips
+httpx
+pytest

@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
+import pyvips
 import io
 
 app = FastAPI()
@@ -14,68 +14,71 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an image using pyvips.
+    Uses a synchronous 'def' to allow FastAPI to run this CPU-bound task in a thread pool.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Efficiently check file size using seek/tell
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        image_bytes = file.file.read()
 
-    except UnidentifiedImageError:
+        # Load metadata to check width
+        # This is fast as it doesn't decode the whole image yet
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
+
+        MAX_WIDTH = 1600
+
+        if img.width > MAX_WIDTH:
+            # Use 'shrink-on-load' for massive performance gain when resizing
+            img = pyvips.Image.thumbnail_buffer(image_bytes, MAX_WIDTH)
+
+        # Flatten alpha channel (RGBA/P) to white background since JPEG doesn't support transparency
+        if img.hasalpha():
+            img = img.flatten(background=[255, 255, 255])
+
+        # Compress to JPEG buffer
+        # interlace=True for progressive JPEG
+        # strip=True removes metadata (EXIF/IPTC/etc)
+        # optimize_coding=True for better compression
+        output_buffer = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+
+        return Response(
+            content=output_buffer,
+            media_type="image/jpeg"
+        )
+
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
+    except HTTPException:
+        # Re-raise HTTPExceptions (like file too large)
+        raise
     except Exception:
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )

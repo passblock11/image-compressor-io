@@ -1,0 +1,3 @@
+## 2025-05-22 - [Migrated to pyvips for Image Processing]
+**Learning:** Migrating from Pillow to `pyvips` and switching from `async def` to sync `def` in FastAPI provides a massive performance boost for CPU-bound image processing. `pyvips`'s "shrink-on-load" (`thumbnail_buffer`) is significantly more efficient than Pillow's `resize` because it avoids decoding pixels that will be discarded. Switching to a sync endpoint prevents the FastAPI event loop from being blocked by heavy CPU work, delegating it to a thread pool instead.
+**Action:** Always prefer `pyvips` for high-throughput image manipulation in production, and ensure CPU-bound FastAPI endpoints are defined as synchronous `def` unless they utilize non-blocking I/O.

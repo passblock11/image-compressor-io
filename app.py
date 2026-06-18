@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
@@ -14,11 +13,11 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+def compress(file: UploadFile = File(...)):
 
     try:
         # read uploaded file
-        image_bytes = await file.read()
+        image_bytes = file.file.read()
 
         # file size validation
         if len(image_bytes) > MAX_FILE_SIZE:
@@ -34,13 +33,16 @@ async def compress(file: UploadFile = File(...)):
             )
 
         # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    except UnidentifiedImageError:
+    except pyvips.error.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
+
+    except HTTPException as e:
+        raise e
 
     except Exception:
         raise HTTPException(
@@ -48,34 +50,26 @@ async def compress(file: UploadFile = File(...)):
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
     MAX_WIDTH = 1600
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+    # resize large images using shrink-on-load if possible, or thumbnail
+    # we use height=10000000 to ensure we only constrain by width
+    if img.width > MAX_WIDTH:
+        img = pyvips.Image.thumbnail_buffer(image_bytes, MAX_WIDTH, height=10000000)
 
-    output = io.BytesIO()
+    # convert to RGB if it has alpha channel (flatten onto white background)
+    if img.hasalpha():
+        img = img.flatten(background=[255, 255, 255])
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
+    # compress image to JPEG buffer
+    output_bytes = img.jpegsave_buffer(
+        Q=80,
+        optimize_coding=True,
+        interlace=True,
+        strip=True
     )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

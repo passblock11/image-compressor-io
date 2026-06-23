@@ -1,0 +1,3 @@
+## 2025-05-15 - [Library Migration: Pillow to pyvips]
+**Learning:** Migrating from Pillow to pyvips for JPEG compression and resizing provided a ~70% reduction in average latency (from ~0.31s to ~0.09s for a 3000x3000px image). Key optimizations included 'shrink-on-load' via `thumbnail_buffer` and switching to a synchronous `def` endpoint to utilize FastAPI's external thread pool, preventing CPU-bound work from blocking the event loop.
+**Action:** For performance-critical image processing, prefer `pyvips` with `thumbnail_buffer` and ensure system-level `libvips-dev` is installed. Always use `def` instead of `async def` in FastAPI for heavy CPU tasks.

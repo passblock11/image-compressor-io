@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimizing Image Compression with pyvips]
+**Learning:** Migrating from Pillow to pyvips for image processing provides significant performance gains (up to 70% reduction in latency for large images) through "shrink-on-load" (thumbnail_buffer) and demand-driven execution. pyvips.Image.hasalpha() returns 1 or 0, which is truthy/falsy in Python. Switching FastAPI endpoints from async def to def for CPU-bound tasks prevents event loop blocking by offloading work to a thread pool.
+**Action:** Use pyvips for high-performance image processing tasks and prefer synchronous def endpoints in FastAPI for CPU-intensive operations.

@@ -1,0 +1,3 @@
+## 2025-05-15 - Image Processing Migration to pyvips
+**Learning:** Migrating from Pillow to `pyvips` for image processing (especially resizing) provides a significant performance boost (~70% latency reduction) due to "shrink-on-load" optimization. Additionally, changing FastAPI endpoints from `async def` to synchronous `def` for CPU-bound tasks like image compression allows the server to use its thread pool, preventing event loop blockage and improving concurrent throughput.
+**Action:** Prefer `pyvips` for high-throughput image processing tasks and use synchronous `def` for CPU-bound operations in FastAPI.

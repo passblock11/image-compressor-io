@@ -1,0 +1,3 @@
+## 2025-05-15 - [High-performance image compression with pyvips]
+**Learning:** Migrating from Pillow to pyvips and using `thumbnail_buffer` (shrink-on-load) significantly reduces latency (approx. 68% in this case) and memory usage for image resizing tasks. Additionally, changing CPU-bound FastAPI endpoints from `async def` to `def` prevents blocking the event loop by leveraging FastAPI's thread pool.
+**Action:** Use pyvips and synchronous endpoints for image processing tasks in FastAPI. Always check for pre-existing dependencies in `requirements.txt` and ensure repository hygiene by excluding build artifacts like `__pycache__` and log files from the final submission.

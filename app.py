@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
+import pyvips
 import io
 
 app = FastAPI()
@@ -14,68 +14,78 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    """
+    Compresses an uploaded image using pyvips for high performance.
+    Resizes images to a max width of 1600px while preserving aspect ratio.
+    Converts output to optimized, progressive JPEG.
+    """
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Efficiently check file size without reading everything into memory yet
+        file.file.seek(0, io.SEEK_END)
+        size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        image_bytes = file.file.read()
 
-    except UnidentifiedImageError:
+        MAX_WIDTH = 1600
+
+        # Load image lazily to check dimensions
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
+
+        # Use shrink-on-load (thumbnail_buffer) if resizing is needed
+        # This is significantly faster than loading full image then resizing
+        if img.width > MAX_WIDTH:
+            # We set a very large height to ensure only width is the constraint
+            img = pyvips.Image.thumbnail_buffer(image_bytes, MAX_WIDTH, height=10000000)
+
+        # Ensure consistent sRGB colorspace
+        if img.interpretation != 'srgb':
+            img = img.colourspace('srgb')
+
+        # Flatten transparency against a white background for JPEG compatibility
+        if img.hasalpha():
+            img = img.flatten(background=[255, 255, 255])
+
+        # Save to JPEG buffer with optimizations
+        # Q=80 matches original quality
+        # optimize_coding=True performs Huffman table optimization
+        # interlace=True creates progressive JPEGs
+        # strip=True removes metadata (EXIF, ICC, etc.) to reduce size
+        output_buffer = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+
+        return Response(
+            content=output_buffer,
+            media_type="image/jpeg"
+        )
+
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
+    except HTTPException:
+        # Re-raise HTTPExceptions (like file too large or empty)
+        raise
     except Exception:
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )

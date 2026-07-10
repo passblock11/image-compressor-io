@@ -1,0 +1,3 @@
+## 2025-05-15 - pyvips Migration for Image Compression
+**Learning:** Migrating from Pillow to pyvips and switching from `async def` to synchronous `def` in FastAPI provides a massive performance boost for CPU-bound image processing. pyvips's `thumbnail_buffer` utilizes 'shrink-on-load' optimizations which drastically reduce memory usage and latency. Switching to `def` allows FastAPI to delegate the work to a thread pool, preventing event loop blockage.
+**Action:** Always consider pyvips for high-throughput image processing tasks and ensure CPU-bound FastAPI endpoints are synchronous to leverage the internal thread pool.

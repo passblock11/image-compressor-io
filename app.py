@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
+import pyvips
 import io
 
 app = FastAPI()
@@ -14,68 +14,95 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):
+    # file size validation without reading the whole file in memory
     try:
-        # read uploaded file
-        image_bytes = await file.read()
-
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
-            )
-
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
-
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
-
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
-
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
     except Exception:
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Max allowed size is 100 MB"
+        )
 
-    width, height = img.size
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty file"
+        )
+
+    try:
+        image_bytes = file.file.read()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
+
+    try:
+        # Check metadata lazily first using new_from_buffer
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file"
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
 
     MAX_WIDTH = 1600
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+    try:
+        # Resize using pyvips.Image.thumbnail_buffer if width exceeds MAX_WIDTH
+        if img.width > MAX_WIDTH:
+            # We configure height to be extremely large (10000000) to ensure
+            # pyvips constraints only the width to MAX_WIDTH, preserving aspect ratio.
+            img = pyvips.Image.thumbnail_buffer(
+                image_bytes,
+                MAX_WIDTH,
+                height=10000000
+            )
 
-    output = io.BytesIO()
+        # Ensure color profile is standard sRGB
+        img = img.colourspace("srgb")
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
+        # Convert/Flatten alpha/transparency modes to RGB on a white background
+        if img.hasalpha():
+            img = img.flatten(background=[255, 255, 255])
 
-    output.seek(0)
-# //changes 
+        # Compress and save to JPEG buffer with high-performance parameters:
+        # - Q=80 (Quality level)
+        # - optimize_coding=True (Huffman table optimization)
+        # - interlace=True (Progressive JPEG rendering)
+        # - strip=True (Strip all metadata/EXIF/ICC profiles for reduced file size)
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file or processing error"
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
+
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

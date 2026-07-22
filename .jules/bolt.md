@@ -1,0 +1,3 @@
+## 2024-07-22 - Pyvips Migration and Shrink-On-Load Optimization
+**Learning:** Migrating from Pillow to `pyvips` on synchronous FastAPI endpoints significantly reduces CPU and memory overhead during image compression. Utilizing `pyvips.Image.thumbnail_buffer` performs a highly optimized "shrink-on-load" operation, preventing full image decoding into memory until resizing/saving is executed. Passing an extremely large `height` argument (e.g., `10000000`) lets us constrain the dimensions solely on `width` (preserving aspect ratio) while maintaining 100% of the original behavior for tall images.
+**Action:** Always prefer `pyvips` with `thumbnail_buffer` for high-throughput image scaling and compression in Python backend APIs.

@@ -1,7 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
+import pyvips
 
 app = FastAPI()
 
@@ -33,14 +32,18 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # try opening image using pyvips
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    except UnidentifiedImageError:
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
+
+    except HTTPException:
+        # Re-raise HTTPExceptions we raised
+        raise
 
     except Exception:
         raise HTTPException(
@@ -48,34 +51,52 @@ async def compress(file: UploadFile = File(...)):
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
+    # Check image dimensions
+    width = img.width
 
     MAX_WIDTH = 1600
 
-    # resize large images
+    # resize large images using pyvips
+    # pyvips.Image.thumbnail_buffer is highly optimized because of shrink-on-load.
+    # Note: thumbnail_buffer in pyvips 3.1.1/8.15 does not support 'no_upscale'.
+    # We only call thumbnail_buffer if width is greater than MAX_WIDTH.
+    # To keep original aspect ratio behavior, we set height to a very large number.
     if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        try:
+            img = pyvips.Image.thumbnail_buffer(image_bytes, MAX_WIDTH, height=10000000)
+        except pyvips.Error:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image file or processing error"
+            )
 
-    output = io.BytesIO()
+    # convert unsupported modes / flatten alpha channels
+    # In pyvips, hasalpha returns 1 if alpha exists, 0 otherwise
+    if img.hasalpha():
+        img = img.flatten(background=[255, 255, 255])
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
+    # Convert to standard sRGB color space to ensure compatibility
+    img = img.colourspace("srgb")
 
-    output.seek(0)
-# //changes 
+    try:
+        # compress image to progressive JPEG buffer
+        # interlace=True represents progressive JPEG, matching progressive=True in Pillow
+        # Q=80 matches quality=80 in Pillow
+        # optimize_coding=True matches optimize=True in Pillow
+        # strip=True removes metadata to further reduce size
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file or processing error"
+        )
+
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

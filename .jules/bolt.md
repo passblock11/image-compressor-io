@@ -1,0 +1,3 @@
+## 2025-02-18 - Pyvips Migration and Sync Endpoints in FastAPI
+**Learning:** Migrating CPU-bound image processing from Pillow to pyvips dramatically reduces CPU usage and latency. Additionally, changing the FastAPI endpoint from an asynchronous `async def` to a synchronous `def` avoids blocking the main event loop because FastAPI automatically delegates synchronous endpoints to an external thread pool.
+**Action:** Always favor high-performance libraries like pyvips over Pillow for heavy image manipulation in API endpoints, and ensure CPU-bound routes are defined synchronously in FastAPI to offload processing to the thread pool.

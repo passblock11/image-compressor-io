@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
 import io
+
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
 
 app = FastAPI()
 
@@ -14,68 +15,73 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    # 1. Early validation of file size and empty status (memory-efficient check)
     try:
-        # read uploaded file
-        image_bytes = await file.read()
-
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
-            )
-
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
-
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
-
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
-
-    except Exception:
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty file"
+        )
 
-    width, height = img.size
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Max allowed size is 100 MB"
+        )
 
-    MAX_WIDTH = 1600
+    try:
+        image_bytes = file.file.read()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+    try:
+        # 2. Lazily check image metadata to avoid expensive operations on smaller images
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    output = io.BytesIO()
+        MAX_WIDTH = 1600
+        if img.width > MAX_WIDTH:
+            # 3. Use shrink-on-load thumbnail optimization for maximum efficiency
+            img = pyvips.Image.thumbnail_buffer(image_bytes, MAX_WIDTH, height=10000000)
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
+        # 4. Handle transparency safely by flattening the alpha channel with a white background
+        if img.hasalpha():
+            img = img.flatten(background=[255, 255, 255])
 
-    output.seek(0)
-# //changes 
+        # 5. Convert to standard sRGB color space
+        img = img.colourspace("srgb")
+
+        # 6. Compress and output high-quality, interlaced, stripped JPEG bytes
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+    except pyvips.error.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file"
+        )
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
+
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

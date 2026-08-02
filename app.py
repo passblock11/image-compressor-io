@@ -1,7 +1,7 @@
+import io
+import pyvips
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -14,68 +14,93 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    """
+    Synchronously compress and resize uploaded images using high-performance pyvips.
+    Runs on FastAPI's thread pool to prevent blocking the event loop.
+    """
+    # 1. File size validation using fast seek/tell
     try:
-        # read uploaded file
-        image_bytes = await file.read()
-
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
-            )
-
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
-
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
-
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
-
-    except Exception:
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Max allowed size is 100 MB"
+        )
 
-    width, height = img.size
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty file"
+        )
 
+    # 2. Read the uploaded image bytes
+    try:
+        image_bytes = file.file.read()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
+
+    # 3. Open image with pyvips
+    try:
+        # Load metadata lazily
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file"
+        )
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
+
+    # 4. Resize if width is larger than MAX_WIDTH (1600)
     MAX_WIDTH = 1600
+    try:
+        if img.width > MAX_WIDTH:
+            # Use high-performance thumbnail_image
+            img = img.thumbnail_image(MAX_WIDTH, height=10000000)
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        # 5. Handle transparency (alpha channel)
+        has_alpha = img.hasalpha() if callable(img.hasalpha) else img.hasalpha
+        if has_alpha:
+            img = img.flatten(background=[255, 255, 255])
 
-    output = io.BytesIO()
+        # 6. Normalize colorspace to sRGB
+        if img.interpretation != "srgb":
+            img = img.colourspace("srgb")
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
+        # 7. Compress and save to JPEG buffer
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            strip=True
+        )
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file"
+        )
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        )
 
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

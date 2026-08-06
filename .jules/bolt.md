@@ -1,0 +1,5 @@
+# Bolt's Journal
+
+## 2025-02-18 - High-Performance Image Compression with pyvips & Thread Pooling
+**Learning:** Migrating from Pillow to pyvips for CPU-bound image compression provides massive latency reductions (from ~0.2653s to ~0.0569s, a ~78.5% improvement). Using pyvips's `thumbnail_buffer` utilizes shrink-on-load to read only needed pixels, reducing both processing time and memory overhead. Additionally, changing the FastAPI endpoint from an async `def` to a synchronous `def` avoids blocking the single-threaded async event loop, as FastAPI automatically runs synchronous handlers in its external thread pool. Furthermore, we resolved a subtle FastAPI error handling bug where broad `except Exception` blocks swallowed specific `HTTPException` raises (like "Empty file" and "File too large").
+**Action:** Always favor pyvips and synchronous thread pool handlers for CPU-bound image processing tasks in FastAPI, and avoid raising standard exceptions inside try blocks where broad generic handlers might swallow them.

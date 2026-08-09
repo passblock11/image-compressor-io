@@ -1,0 +1,3 @@
+## 2026-03-08 - PyVips Optimization for Image Compression
+**Learning:** Calling `thumbnail_image` on a lazily-loaded Image (via `new_from_buffer`) is significantly faster than `thumbnail_buffer` because it avoids loading/decoding the buffer twice. In pyvips 3.1.1, `hasalpha` is callable whereas in newer versions it's a property; cross-version handling with `callable(img.hasalpha)` is essential. Additionally, standard `except Exception` blocks can swallow FastAPI's custom `HTTPException`s if not filtered correctly.
+**Action:** Always load buffers lazily with `new_from_buffer`, check size constraints, conditionally apply `thumbnail_image`, and check both callability of `hasalpha` and explicitly bubble up `HTTPException` in broad try-except blocks.

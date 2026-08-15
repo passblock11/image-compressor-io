@@ -1,11 +1,23 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
 import io
+
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def _has_alpha(img: pyvips.Image) -> bool:
+    """Check if a pyvips image has an alpha channel in a cross-version compatible way."""
+    if hasattr(img, "hasalpha"):
+        res = img.hasalpha()
+        return bool(res() if callable(res) else res)
+    if hasattr(img, "has_alpha"):
+        res = img.has_alpha
+        return bool(res() if callable(res) else res)
+    return img.bands in (2, 4) and getattr(img, "interpretation", None) not in ("cmyk", "scmyk")
 
 
 @app.get("/")
@@ -14,68 +26,64 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    # Fast in-memory size validation using stream seek/tell without reading full buffer
+    file.file.seek(0, io.SEEK_END)
+    file_size = file.file.tell()
+    file.file.seek(0)
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Max allowed size is 100 MB"
+        )
+
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty file"
+        )
+
+    image_bytes = file.file.read()
 
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # pyvips open from buffer (lazy loading)
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
-            )
+        MAX_WIDTH = 1600
 
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
+        # Resize if image width exceeds max width
+        if img.width > MAX_WIDTH:
+            # thumbnail_image on an existing lazy Image object is faster than thumbnail_buffer
+            img = img.thumbnail_image(MAX_WIDTH, height=10000000)
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Handle alpha channel flattening for PNG/RGBA/LA formats
+        if _has_alpha(img):
+            img = img.colourspace("srgb").flatten(background=[255, 255, 255])
+        elif getattr(img, "interpretation", None) == "cmyk":
+            img = img.colourspace("srgb")
 
-    except UnidentifiedImageError:
+        # Save to JPEG buffer using pyvips
+        # Q: quality (80), interlace: progressive (True), strip: remove metadata (True), optimize_coding: Huffman optimization (True)
+        jpeg_data = img.jpegsave_buffer(
+            Q=80,
+            interlace=True,
+            strip=True,
+            optimize_coding=True
+        )
+
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=jpeg_data,
         media_type="image/jpeg"
     )

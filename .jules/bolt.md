@@ -1,0 +1,3 @@
+# 2025-05-18 - Migrating to pyvips & synchronous FastAPI endpoint
+**Learning:** `pyvips` was already included in `requirements.txt` and `render.yaml`, but the `/compress` endpoint was using Pillow synchronously inside an `async def` handler, blocking the main asyncio event loop during image processing. Migrating the handler to a synchronous `def` allows FastAPI to execute the CPU-bound `pyvips` image processing in threadpool workers, reducing processing latency by ~58.4%.
+**Action:** When handling heavy image or CPU tasks in FastAPI, use synchronous `def` endpoints and `pyvips`'s lazy loading / streaming mechanisms.

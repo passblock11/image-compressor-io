@@ -1,0 +1,3 @@
+## 2026-03-08 - PyVips vs Pillow Performance Optimization
+**Learning:** `pyvips` thumbnailing with `thumbnail_buffer` utilizes shrink-on-load optimization, yielding an ~85% reduction in latency over Pillow `Image.LANCZOS` when downscaling large images. Additionally, converting FastAPI endpoints handling CPU-bound image processing from `async def` to synchronous `def` delegates tasks to worker thread pools, preventing main event loop blocking under load.
+**Action:** When working on FastAPI image processing services where `pyvips` and `libvips-dev` are pre-declared in `requirements.txt` and build scripts, prefer `pyvips` with `def` endpoints and ensure `.gitignore` excludes `__pycache__`.

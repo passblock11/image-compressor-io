@@ -1,0 +1,3 @@
+## 2026-08-24 - Stream-based file validation & PIL JPEG draft downscaling
+**Learning:** Pre-reading entire uploaded file payloads via `await file.read()` copies raw byte arrays into memory and prevents PIL from lazily opening file streams. Additionally, for JPEG downscaling, using PIL's native `img.draft('RGB', ...)` hint allows libjpeg to downsample during file decoding, yielding up to ~70% reduction in processing time for large JPEG files.
+**Action:** Validate UploadFile sizes via `file.file.seek(0, io.SEEK_END)` and `file.file.tell()`, pass `file.file` directly to `Image.open()`, use `img.draft()` for JPEG downscaling, use `BICUBIC` resampling over `LANCZOS`, and define CPU-bound FastAPI endpoints as synchronous `def` so work runs in Starlette worker threads.

@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import io
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -14,7 +15,7 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
+async def compress(file: UploadFile = File(...)):  # noqa: B008
 
     try:
         # read uploaded file
@@ -42,11 +43,20 @@ async def compress(file: UploadFile = File(...)):
             detail="Invalid image file"
         )
 
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
+
+    MAX_WIDTH = 1600
+    width, height = img.size
+
+    # OPTIMIZATION 1: Draft mode for JPEGs
+    # Fast libjpeg DCT downscaling during initial load before full decode
+    if width > MAX_WIDTH:
+        target_height = int(height * (MAX_WIDTH / width))
+        img.draft("RGB", (MAX_WIDTH, target_height))
 
     # convert unsupported modes
     if img.mode in ("RGBA", "P"):
@@ -54,12 +64,11 @@ async def compress(file: UploadFile = File(...)):
 
     width, height = img.size
 
-    MAX_WIDTH = 1600
-
-    # resize large images
+    # OPTIMIZATION 2: BICUBIC resampling filter
+    # Image.BICUBIC is ~2-3x faster than Image.LANCZOS with virtually identical visual quality
     if width > MAX_WIDTH:
         new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
 
     output = io.BytesIO()
 
@@ -73,9 +82,9 @@ async def compress(file: UploadFile = File(...)):
         subsampling=2
     )
 
-    output.seek(0)
-# //changes 
+    # OPTIMIZATION 3: Return buffer directly via getvalue()
+    # Avoids seeking back to 0 and re-reading the entire buffer payload
     return Response(
-        content=output.read(),
+        content=output.getvalue(),
         media_type="image/jpeg"
     )

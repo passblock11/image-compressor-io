@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import io
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -14,68 +15,65 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    # Synchronous 'def' offloads CPU-bound PIL tasks to Starlette's worker thread pool,
+    # preventing CPU operations from blocking the main asyncio event loop.
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Fast file size validation in O(1) without reading full file bytes into memory
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
+                detail="File too large. Max allowed size is 100 MB",
             )
 
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="Empty file")
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Open image stream directly from file object to avoid unnecessary byte copying
+        img = Image.open(file.file)
 
+        width, height = img.size
+        MAX_WIDTH = 1600
+
+        # Fast resize for large images
+        if width > MAX_WIDTH:
+            target_height = int(height * (MAX_WIDTH / width))
+            # Enable libjpeg shrink-on-load fast decoding for JPEGs
+            if getattr(img, "format", None) == "JPEG":
+                img.draft("RGB", (MAX_WIDTH, target_height))
+
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            # Image.BICUBIC provides ~2x faster resampling than Image.LANCZOS
+            img = img.resize((MAX_WIDTH, target_height), Image.BICUBIC)
+        else:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+        output = io.BytesIO()
+
+        # Compress image
+        img.save(
+            output,
+            format="JPEG",
+            quality=80,
+            optimize=True,
+            progressive=True,
+            subsampling=2,
+        )
+
+        # Use getvalue() directly on BytesIO to eliminate seek/read overhead
+        return Response(content=output.getvalue(), media_type="image/jpeg")
+
+    except HTTPException:
+        # Re-raise HTTPException to prevent masking 413 or 400 errors
+        raise
     except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
-
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Upload failed"
-        )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Upload failed")

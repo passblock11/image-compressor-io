@@ -1,11 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_WIDTH = 1600
 
 
 @app.get("/")
@@ -13,14 +13,24 @@ def root():
     return {"message": "Image compression API running"}
 
 
+def _has_alpha(img: pyvips.Image) -> bool:
+    """Check if a pyvips Image instance has an alpha channel across pyvips versions."""
+    if hasattr(img, "has_alpha"):
+        val = img.has_alpha
+        return bool(val() if callable(val) else val)
+    if hasattr(img, "hasalpha"):
+        val = img.hasalpha
+        return bool(val() if callable(val) else val)
+    return img.bands in (2, 4)
+
+
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Read uploaded file bytes
+        image_bytes = file.file.read()
 
-        # file size validation
+        # File size validation
         if len(image_bytes) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
@@ -33,49 +43,43 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Performance optimization: Use pyvips for fast C-based SIMD/multi-threaded decoding & resizing
+        img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    except UnidentifiedImageError:
+        # Flatten transparent alpha layers onto a solid white background
+        if _has_alpha(img):
+            img = img.colourspace("srgb").flatten(background=[255, 255, 255])
+        elif img.interpretation not in ("srgb", "bw"):
+            img = img.colourspace("srgb")
+
+        # Fast resize for large images preserving aspect ratio
+        if img.width > MAX_WIDTH:
+            img = img.thumbnail_image(MAX_WIDTH)
+
+        # Compress to progressive JPEG with optimized Huffman tables
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            subsample_mode="on"
+        )
+
+    except HTTPException:
+        raise
+
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
 
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

@@ -1,7 +1,6 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -14,11 +13,10 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
     try:
         # read uploaded file
-        image_bytes = await file.read()
+        image_bytes = file.file.read()
 
         # file size validation
         if len(image_bytes) > MAX_FILE_SIZE:
@@ -33,49 +31,53 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # load image with pyvips
+        vimg = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    except UnidentifiedImageError:
+        # convert unsupported/special color modes
+        if vimg.interpretation in ("cmyk", "scmyk") or vimg.bands == 2:
+            vimg = vimg.colourspace("srgb")
+
+        MAX_WIDTH = 1600
+
+        # resize large images with shrink-on-load speedup
+        if vimg.width > MAX_WIDTH:
+            vimg = vimg.thumbnail_image(MAX_WIDTH, height=10000000)
+
+        # check for alpha channel and flatten transparency over white background
+        has_alpha = False
+        if hasattr(vimg, "hasalpha"):
+            has_alpha = bool(vimg.hasalpha() if callable(vimg.hasalpha) else vimg.hasalpha)
+        elif hasattr(vimg, "has_alpha"):
+            has_alpha = bool(vimg.has_alpha)
+        else:
+            has_alpha = vimg.bands in (2, 4)
+
+        if has_alpha:
+            vimg = vimg.flatten(background=[255, 255, 255])
+
+        # compress image to JPEG buffer
+        output_bytes = vimg.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            subsample_mode="on"
+        )
+
+    except HTTPException:
+        raise
+    except pyvips.Error:
         raise HTTPException(
             status_code=400,
             detail="Invalid image file"
         )
-
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

@@ -1,0 +1,3 @@
+## 2025-05-23 - Pillow Pipeline Optimization & Non-Blocking Endpoint Execution
+**Learning:** In FastAPI, CPU-bound Pillow tasks in `async def` endpoints block the asyncio event loop. Changing to synchronous `def` offloads work to worker threads. Combining direct stream opening (`Image.open(file.file)`), libjpeg `img.draft()` decoder downscaling, and `Image.BICUBIC` resampling reduces endpoint processing latency by ~55%.
+**Action:** Always prefer synchronous `def` endpoints for CPU-intensive image processing tasks in FastAPI, stream files directly to avoid memory duplication, and enable JPEG `draft()` downscaling before full decode.

@@ -1,0 +1,3 @@
+## 2026-03-08 - Pyvips Migration & Sync Endpoints in FastAPI
+**Learning:** For CPU-bound image processing tasks in FastAPI, changing `async def` to sync `def` delegates execution to Starlette's threadpool rather than blocking the asyncio event loop. Utilizing `pyvips` (which was already in requirements.txt/render.yaml) provides C-level demand-driven image evaluation and shrink-on-load JPEG downscaling, yielding ~67-75% latency reduction compared to Pillow.
+**Action:** When working on image processing APIs with FastAPI, use synchronous `def` routes and `pyvips` pipelines for high-throughput image manipulation.

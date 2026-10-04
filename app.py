@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import io
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -14,27 +15,66 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Fast O(1) file size validation without reading entire payload into RAM
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
                 detail="File too large. Max allowed size is 100 MB"
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Open image stream lazily from file pointer
+        img = Image.open(file.file)
+
+        MAX_WIDTH = 1600
+        width, height = img.size
+
+        # Fast JPEG draft downscaling during libjpeg decode pass
+        if width > MAX_WIDTH:
+            new_height = int(height * (MAX_WIDTH / width))
+            if img.format == "JPEG":
+                img.draft("RGB", (MAX_WIDTH, new_height))
+                width, height = img.size
+
+        # Convert unsupported modes
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # Resize large images with fast BICUBIC filter
+        if width > MAX_WIDTH:
+            new_height = int(height * (MAX_WIDTH / width))
+            img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
+
+        output = io.BytesIO()
+
+        # Compress and save image
+        img.save(
+            output,
+            format="JPEG",
+            quality=80,
+            optimize=True,
+            progressive=True,
+            subsampling=2
+        )
+
+        return Response(
+            content=output.getvalue(),
+            media_type="image/jpeg"
+        )
+
+    except HTTPException:
+        raise
 
     except UnidentifiedImageError:
         raise HTTPException(
@@ -42,40 +82,8 @@ async def compress(file: UploadFile = File(...)):
             detail="Invalid image file"
         )
 
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
-
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )

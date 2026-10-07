@@ -1,7 +1,14 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
 import io
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
+
+try:
+    import pyvips
+    PYVIPS_AVAILABLE = True
+except Exception:  # noqa: BLE001
+    PYVIPS_AVAILABLE = False
+    from PIL import Image, UnidentifiedImageError
 
 app = FastAPI()
 
@@ -14,13 +21,12 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Read uploaded file
+        image_bytes = file.file.read()
 
-        # file size validation
+        # File size validation
         if len(image_bytes) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
@@ -33,49 +39,75 @@ async def compress(file: UploadFile = File(...)):
                 detail="Empty file"
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        MAX_WIDTH = 1600
 
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
+        if PYVIPS_AVAILABLE:
+            # High-performance pyvips pipeline
+            img = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    except Exception:
+            if img.width > MAX_WIDTH:
+                img = img.thumbnail_image(MAX_WIDTH, height=10000000)
+
+            if img.interpretation not in ("cmyk", "scmyk"):
+                has_a = False
+                if hasattr(img, "hasalpha") and callable(img.hasalpha):
+                    has_a = img.hasalpha()
+                elif hasattr(img, "has_alpha"):
+                    has_a = img.has_alpha
+                else:
+                    has_a = img.bands in (2, 4)
+
+                if has_a:
+                    img = img.colourspace("srgb").flatten(background=[255, 255, 255])
+
+            output_bytes = img.jpegsave_buffer(
+                Q=80,
+                optimize_coding=True,
+                interlace=True
+            )
+        else:
+            # Optimized Pillow fallback pipeline
+            img = Image.open(io.BytesIO(image_bytes))
+
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            width, height = img.size
+            if width > MAX_WIDTH:
+                new_height = int(height * (MAX_WIDTH / width))
+                img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+
+            output = io.BytesIO()
+            img.save(
+                output,
+                format="JPEG",
+                quality=80,
+                optimize=True,
+                progressive=True,
+                subsampling=2
+            )
+            output_bytes = output.getvalue()
+
+    except HTTPException:
+        raise
+
+    except Exception as e:  # noqa: BLE001
+        if not PYVIPS_AVAILABLE and isinstance(e, UnidentifiedImageError):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image file"
+            )
+        if PYVIPS_AVAILABLE and isinstance(e, pyvips.Error):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid image file"
+            )
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-
-    width, height = img.size
-
-    MAX_WIDTH = 1600
-
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
+        content=output_bytes,
         media_type="image/jpeg"
     )

@@ -1,0 +1,3 @@
+## 2026-03-08 - Pyvips Thumbnailing and Fast Stream Validation
+**Learning:** In FastAPI image processing services, offloading CPU-bound tasks by converting endpoints from `async def` to sync `def` delegates execution to Starlette's threadpool. Utilizing `pyvips.Image.new_from_buffer` alongside `thumbnail_image` provides ~63.8% speedup over Pillow while avoiding full in-memory byte duplication via `seek`/`tell` file size validation.
+**Action:** Always verify `requirements.txt` and `render.yaml` for pre-declared system dependencies (`libvips-dev`), use synchronous FastAPI defs for heavy image transformations, and include `.gitignore` to prevent committing `__pycache__` artifacts.

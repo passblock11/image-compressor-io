@@ -1,11 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
 import io
+
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_WIDTH = 1600
 
 
 @app.get("/")
@@ -14,68 +16,78 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    # Fast O(1) file size validation using stream seek/tell without reading full buffer into RAM
     try:
-        # read uploaded file
-        image_bytes = await file.read()
-
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
-            )
-
-        if len(image_bytes) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="Empty file"
-            )
-
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
-
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
-        )
-
-    except Exception:
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
+    except Exception as e:
         raise HTTPException(
             status_code=400,
             detail="Upload failed"
+        ) from e
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="File too large. Max allowed size is 100 MB"
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Empty file"
+        )
 
-    width, height = img.size
+    try:
+        image_bytes = file.file.read()
 
-    MAX_WIDTH = 1600
+        # Load image via pyvips (fast C library)
+        vimg = pyvips.Image.new_from_buffer(image_bytes, "")
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        # Convert CMYK colourspace to sRGB
+        if vimg.interpretation in ("cmyk", "scmyk"):
+            vimg = vimg.colourspace("srgb")
 
-    output = io.BytesIO()
+        # Detect alpha channel (RGBA, LA, etc.)
+        has_alpha = False
+        if hasattr(vimg, "hasalpha"):
+            has_alpha = vimg.hasalpha() if callable(vimg.hasalpha) else vimg.hasalpha
+        elif hasattr(vimg, "has_alpha"):
+            has_alpha = vimg.has_alpha() if callable(vimg.has_alpha) else vimg.has_alpha
+        else:
+            has_alpha = vimg.bands in (2, 4) and vimg.interpretation not in ("cmyk", "scmyk")
 
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
+        # Flatten alpha channel onto white background after ensuring sRGB colourspace
+        if has_alpha:
+            vimg = vimg.colourspace("srgb")
+            vimg = vimg.flatten(background=[255, 255, 255])
 
-    output.seek(0)
-# //changes 
-    return Response(
-        content=output.read(),
-        media_type="image/jpeg"
-    )
+        # Fast shrink-on-load downscaling if width exceeds MAX_WIDTH
+        if vimg.width > MAX_WIDTH:
+            vimg = vimg.thumbnail_image(MAX_WIDTH, height=10000000)
+
+        # High-performance progressive JPEG buffer export
+        compressed_bytes = vimg.jpegsave_buffer(Q=80, optimize_coding=True, interlace=True)
+
+        return Response(
+            content=compressed_bytes,
+            media_type="image/jpeg"
+        )
+
+    except HTTPException:
+        # Re-raise explicit HTTP exceptions (e.g. 413 File too large, 400 Empty file)
+        raise
+
+    except pyvips.Error as e:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file"
+        ) from e
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed"
+        ) from e

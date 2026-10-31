@@ -1,11 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import pyvips
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_WIDTH = 1600
 
 
 @app.get("/")
@@ -14,68 +14,76 @@ def root():
 
 
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
+    # Performance optimization: Use synchronous def instead of async def to avoid
+    # blocking the main asyncio event loop during CPU-intensive image compression.
+    # FastAPI automatically runs synchronous path operations in Starlette's worker thread pool.
     try:
         # read uploaded file
-        image_bytes = await file.read()
+        image_bytes = file.file.read()
 
         # file size validation
         if len(image_bytes) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
+                detail="File too large. Max allowed size is 100 MB",
             )
 
         if len(image_bytes) == 0:
             raise HTTPException(
                 status_code=400,
-                detail="Empty file"
+                detail="Empty file",
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
-
-    except UnidentifiedImageError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid image file"
+        # Performance optimization: Use pyvips with shrink-on-load via thumbnail_buffer.
+        # This dramatically reduces memory allocation and CPU decode time compared to PIL,
+        # shrinking directly during JPEG DCT decoding rather than decoding full resolution first.
+        # size="down" prevents upscaling images whose width is <= MAX_WIDTH.
+        img = pyvips.Image.thumbnail_buffer(
+            image_bytes,
+            MAX_WIDTH,
+            height=10_000_000,
+            size="down",
         )
 
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Upload failed"
+        # Convert non-standard color spaces (e.g. CMYK) to sRGB
+        if img.interpretation in ("cmyk", "scmyk"):
+            img = img.colourspace("srgb")
+
+        # Flatten transparent alpha channels (RGBA, LA) onto a solid white background
+        if (
+            (hasattr(img, "hasalpha") and img.hasalpha())
+            or getattr(img, "has_alpha", False)
+            or img.bands in (2, 4)
+        ):
+            img = img.colourspace("srgb")
+            img = img.flatten(background=[255, 255, 255])
+
+        # Export compressed progressive JPEG with 4:2:0 subsampling
+        output_bytes = img.jpegsave_buffer(
+            Q=80,
+            optimize_coding=True,
+            interlace=True,
+            subsample_mode="on",
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
+    except HTTPException:
+        # Re-raise explicit HTTP exceptions so they are not masked
+        raise
 
-    width, height = img.size
+    except pyvips.Error:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file",
+        )
 
-    MAX_WIDTH = 1600
+    except Exception:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail="Upload failed",
+        )
 
-    # resize large images
-    if width > MAX_WIDTH:
-        new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
-
-    output = io.BytesIO()
-
-    # compress image
-    img.save(
-        output,
-        format="JPEG",
-        quality=80,
-        optimize=True,
-        progressive=True,
-        subsampling=2
-    )
-
-    output.seek(0)
-# //changes 
     return Response(
-        content=output.read(),
-        media_type="image/jpeg"
+        content=output_bytes,
+        media_type="image/jpeg",
     )

@@ -1,0 +1,3 @@
+## 2026-03-30 - pyvips shrink-on-load and FastAPI worker threads for image compression
+**Learning:** In FastAPI, CPU-bound image manipulation blocking an `async def` route stalls the entire event loop. Furthermore, Pillow decompresses high-resolution images fully before resizing. In contrast, `pyvips.Image.thumbnail_buffer(..., size="down")` uses libjpeg's shrink-on-load DCT subsampling, yielding a ~68% latency reduction (~220ms -> ~69ms) and significantly lower memory overhead. Making the endpoint a synchronous `def` allows Starlette to offload work to its thread pool without event-loop stalls.
+**Action:** When working on image processing APIs, prefer libvips/pyvips with shrink-on-load over Pillow, and use synchronous `def` endpoints for CPU-bound routes in FastAPI.

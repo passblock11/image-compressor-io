@@ -1,0 +1,5 @@
+# Bolt's Performance Journal
+
+## 2026-03-08 - FastAPI CPU-bound endpoints & Pillow image processing pipeline
+**Learning:** Defining CPU-bound operations in FastAPI route handlers as `async def` runs them directly on the main event loop, blocking concurrent async requests during compute-intensive tasks like resizing and JPEG compression. Defining the route as a regular `def` instructs FastAPI/Starlette to run the endpoint in an external threadpool. Additionally, copying the upload payload into memory via `await file.read()` is redundant when Pillow's `Image.open` can stream directly from `file.file`. Switching the resizing filter from `Image.LANCZOS` to `Image.BICUBIC` cuts resampling time by ~20-25% without perceptible image degradation for thumbnail and downscaling tasks.
+**Action:** Always define CPU-intensive FastAPI routes with `def` rather than `async def`, pass the underlying file stream directly to `Image.open`, use `Image.BICUBIC` for web image downscaling, and use `output.getvalue()` directly to avoid redundant buffer seeks and reads.

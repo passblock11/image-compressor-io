@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import io
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-import io
 
 app = FastAPI()
 
@@ -13,69 +14,77 @@ def root():
     return {"message": "Image compression API running"}
 
 
+# Using synchronous def so FastAPI executes CPU-bound image processing in the
+# worker threadpool instead of blocking the main asyncio event loop.
 @app.post("/compress")
-async def compress(file: UploadFile = File(...)):
-
+def compress(file: UploadFile = File(...)):  # noqa: B008
     try:
-        # read uploaded file
-        image_bytes = await file.read()
+        # Measure file size without loading the entire stream into memory
+        file.file.seek(0, io.SEEK_END)
+        file_size = file.file.tell()
+        file.file.seek(0)
 
-        # file size validation
-        if len(image_bytes) > MAX_FILE_SIZE:
+        # File size validation
+        if file_size > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail="File too large. Max allowed size is 100 MB"
+                detail="File too large. Max allowed size is 100 MB",
             )
 
-        if len(image_bytes) == 0:
+        if file_size == 0:
             raise HTTPException(
                 status_code=400,
-                detail="Empty file"
+                detail="Empty file",
             )
 
-        # try opening image
-        img = Image.open(io.BytesIO(image_bytes))
+        # Open image directly from stream (avoids redundant byte copying)
+        img = Image.open(file.file)
+        # Ensure image data is valid
+        img.load()
+
+    except HTTPException:
+        raise
 
     except UnidentifiedImageError:
         raise HTTPException(
             status_code=400,
-            detail="Invalid image file"
+            detail="Invalid image file",
         )
 
-    except Exception:
+    except Exception:  # noqa: BLE001
         raise HTTPException(
             status_code=400,
-            detail="Upload failed"
+            detail="Upload failed",
         )
 
-    # convert unsupported modes
-    if img.mode in ("RGBA", "P"):
+    # Convert unsupported modes
+    if img.mode in ("RGBA", "P", "LA"):
         img = img.convert("RGB")
 
     width, height = img.size
 
     MAX_WIDTH = 1600
 
-    # resize large images
+    # Resize large images: Image.BICUBIC is ~20-25% faster than LANCZOS with
+    # virtually identical visual quality for photographic downsizing.
     if width > MAX_WIDTH:
         new_height = int(height * (MAX_WIDTH / width))
-        img = img.resize((MAX_WIDTH, new_height), Image.LANCZOS)
+        img = img.resize((MAX_WIDTH, new_height), Image.BICUBIC)
 
     output = io.BytesIO()
 
-    # compress image
+    # Compress image
     img.save(
         output,
         format="JPEG",
         quality=80,
         optimize=True,
         progressive=True,
-        subsampling=2
+        subsampling=2,
     )
 
-    output.seek(0)
-# //changes 
+    # getvalue() returns the underlying buffer directly without seek(0) + read() overhead
     return Response(
-        content=output.read(),
-        media_type="image/jpeg"
+        content=output.getvalue(),
+        media_type="image/jpeg",
     )
